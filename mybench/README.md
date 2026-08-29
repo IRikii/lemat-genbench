@@ -19,7 +19,7 @@ mybench 通过**逐项独立调用 metric** 绕开这些问题，`src/` 下的�
 
 ```bash
 # 主用例：读 extxyz 轨迹，每 400 帧抽一帧
-.venv/bin/python lemat_data/mybench/run_traj_benchmark.py \
+.venv/bin/python mybench/run_traj_benchmark.py \
     --traj lemat_data/experiments/mattergen_results/generated_trajectories/gen_0.extxyz \
     --stride 400 --name gen0_run --output-dir temp
 
