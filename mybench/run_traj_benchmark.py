@@ -12,9 +12,16 @@ Input is a MatterGen ``.extxyz`` trajectory (one frame per denoising step);
 ``gen_{batch}_step_{step}.cif`` files works too.
 
 Usage:
-    .venv/bin/python lemat_data/mybench/run_traj_benchmark.py \
+    .venv/bin/python mybench/run_traj_benchmark.py \
         --traj lemat_data/experiments/mattergen_results/generated_trajectories/gen_0.extxyz \
-        --stride 400 --name gen0_mybench --output-dir temp
+        --stride 400 --name gen0_mybench --output-dir lemat_data/temp
+
+To redraw a figure from a CSV an earlier run produced, without recomputing
+anything (a relaxed run takes ~20 minutes, a replot takes seconds):
+
+    .venv/bin/python mybench/run_traj_benchmark.py \
+        --from-csv lemat_data/temp/gen0_mybench_batch_0_20260829_140452.csv \
+        --name gen0_replot
 """
 
 import argparse
@@ -185,6 +192,82 @@ def write_metadata(
     logger.info(f"Metadata saved: {path}")
 
 
+def batch_id_from_frame_names(df: pd.DataFrame) -> int:
+    """Recover the batch id from a results CSV's ``name`` column.
+
+    Rows are named ``gen_{batch}_step_{step}``; falls back to 0 when the column is
+    missing or shaped differently.
+    """
+    if "name" not in df.columns or df.empty:
+        return 0
+    match = CIF_NAME_RE.match(str(df["name"].iloc[0]))
+    return int(match.group(1)) if match else 0
+
+
+def replot(args: argparse.Namespace) -> None:
+    """Rebuild the HTML figure from an existing results CSV.
+
+    Deliberately writes *only* the HTML: a replot is not a run, so emitting a
+    fresh CSV or meta.json would fabricate a record of computation that never
+    happened.
+    """
+    csv_path = Path(args.from_csv)
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV not found: {csv_path}")
+
+    ignored = [
+        flag
+        for flag, used in (
+            ("--stride", args.stride != 200),
+            ("--config", args.config != "comprehensive"),
+            ("--relax", args.relax),
+            ("--no-mlip", args.no_mlip),
+        )
+        if used
+    ]
+    if ignored:
+        logger.warning(
+            f"--from-csv only redraws the figure; ignoring {', '.join(ignored)}"
+        )
+
+    df = pd.read_csv(csv_path)
+
+    # A --no-mlip CSV has only the validity columns; the figure is entirely MLIP
+    # quantities, so there is nothing to draw.
+    missing = [
+        c for c in ("Ef_mean", "E_hull_mean", "forces_mean") if c not in df.columns
+    ]
+    if missing:
+        raise ValueError(
+            f"{csv_path} has no MLIP columns (missing {', '.join(missing)}); "
+            "it looks like a --no-mlip run, which produces no figure. "
+            "Replot a CSV from a run that included MLIP."
+        )
+
+    batch_id = batch_id_from_frame_names(df)
+    logger.info(
+        f"Replotting from {csv_path} ({len(df)} rows x {len(df.columns)} columns, "
+        f"batch {batch_id})"
+    )
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    html_path = output_dir / f"{args.name}_batch_{batch_id}_{timestamp}.html"
+
+    figure = plotting.build_figure(df, batch_id, args.name)
+    figure.write_html(str(html_path))
+
+    print("\n" + "=" * 60)
+    print("REPLOT COMPLETE")
+    print("=" * 60)
+    print(f"Source CSV  : {csv_path}")
+    print(f"Frames      : {len(df)}")
+    print(f"Relaxed     : {'yes' if 'relaxed_Ef_mean' in df.columns else 'no'}")
+    print(f"HTML        : {html_path}")
+    print("=" * 60)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Per-frame validity + multi-MLIP benchmark of a denoising trajectory"
@@ -192,6 +275,10 @@ def main() -> None:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--traj", help="MatterGen .extxyz trajectory file")
     source.add_argument("--cifs", help="Directory of gen_{batch}_step_{step}.cif files")
+    source.add_argument(
+        "--from-csv",
+        help="Redraw the figure from a CSV an earlier run produced; skips all computation",
+    )
     parser.add_argument("--stride", type=int, default=200, help="Keep every Nth frame")
     parser.add_argument(
         "--config", default="comprehensive", help="Config name or yaml path"
@@ -199,7 +286,9 @@ def main() -> None:
     parser.add_argument(
         "--name", required=True, help="Run label, used in output filenames"
     )
-    parser.add_argument("--output-dir", default="temp", help="Directory for outputs")
+    parser.add_argument(
+        "--output-dir", default="lemat_data/temp", help="Directory for outputs"
+    )
     parser.add_argument(
         "--no-mlip", action="store_true", help="Validity only, skip MLIP"
     )
@@ -211,6 +300,10 @@ def main() -> None:
 
     try:
         start = time.time()
+
+        if args.from_csv:
+            replot(args)
+            return
 
         if args.stride < 1:
             raise ValueError(f"--stride must be >= 1, got {args.stride}")
