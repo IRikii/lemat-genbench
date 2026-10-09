@@ -80,11 +80,37 @@ def _status_line_coords(
     return xs, ys
 
 
-def build_figure(df: pd.DataFrame, batch_id: int, run_name: str) -> go.Figure:
+def _tick_values(steps: pd.Series, tick_every: Optional[int]) -> List[float]:
+    """Which denoising steps get an x-axis label.
+
+    ``tick_every=None`` (or 1) labels every frame, which is what a 10-frame
+    strided run wants. Denser runs pass an integer and get every Nth frame
+    instead, with the first and last steps forced back in -- those two are the
+    anchors of a sanitized run (first placeholder-free frame, final step) and
+    must stay readable whether or not they land on the stride.
+    """
+    values = steps.tolist()
+    if not values or not tick_every or tick_every <= 1:
+        return values
+
+    kept = set(values[::tick_every])
+    kept.update((values[0], values[-1]))
+    return sorted(kept)
+
+
+def build_figure(
+    df: pd.DataFrame,
+    batch_id: int,
+    run_name: str,
+    tick_every: Optional[int] = None,
+) -> go.Figure:
     """Build the three-panel trajectory figure.
 
     When the DataFrame carries ``relaxed_*`` columns (a ``--relax`` run) the
     Ef and E_hull panels gain the relaxed ensemble mean as a dotted overlay.
+
+    ``tick_every`` thins the x-axis labels; the default keeps every step, so an
+    existing caller's figure is unchanged.
     """
     has_relaxed = "relaxed_Ef_mean" in df.columns
 
@@ -216,10 +242,11 @@ def build_figure(df: pd.DataFrame, batch_id: int, run_name: str) -> go.Figure:
                 col=1,
             )
 
+    tickvals = _tick_values(steps, tick_every)
     fig.update_xaxes(
         tickmode="array",
-        tickvals=steps.tolist(),
-        ticktext=[str(s) for s in steps],
+        tickvals=tickvals,
+        ticktext=[str(s) for s in tickvals],
     )
     fig.update_xaxes(title_text="Denoising step", row=3, col=1)
 
