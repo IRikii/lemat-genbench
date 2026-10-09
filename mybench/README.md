@@ -98,14 +98,39 @@ mybench 通过**逐项独立调用 metric** 绕开这些问题，`src/` 下的�
 
 | 文件 | 职责 |
 |---|---|
-| `run_traj_benchmark.py` | CLI 入口：读帧、抽样、编排、存 CSV/HTML/JSON |
+| `run_traj_benchmark.py` | CLI 入口：读帧、按 `--stride` 抽样、编排、存 CSV/HTML/JSON |
+| `run_traj_benchmark_nomd.py` | CLI 入口：**先整帧剔除占位符原子帧**，再按 `--max-frames` 抽稀 |
+| `sanitize_trajectories.py` | 占位符帧的判定与剔除；也能独立当普查 CLI 跑 |
 | `validity.py` | 三项 validity 指标逐项独立调用，组装 status |
 | `mlip.py` | 多 MLIP 单点/弛豫计算，按帧名合并回主表 |
 | `plotting.py` | Plotly 三面板轨迹图 |
 | `notes/` | 设计存档、上游问题记录、测试结论 |
 
+## 变体：`run_traj_benchmark_nomd.py`
+
+含 Md 的帧在 MLIP 侧只能产出 NaN，在 GPU 上还会触发**粘性** CUDA device-side assert
+把整个工作进程的 CUDA 上下文搞坏，连累同批次里本来没问题的帧
+（实测 160 帧只活下来 25 帧，见 `notes/20260910-Plan-sanitize_traj.md`）。
+
+这个变体在计算之前把含 `Md, Po, At, Fr, Fm, No, Lr` 的帧**整帧剔除**，
+再对剩下的"干净尾段"跑同一套 validity + MLIP + 出图。
+
+```bash
+# 普查：每条轨迹还剩多少干净帧
+.venv/bin/python mybench/sanitize_trajectories.py --traj-dir <轨迹目录>
+
+# benchmark：干净帧抽稀到 100 帧，必含首个干净帧和 step 2000
+.venv/bin/python mybench/run_traj_benchmark_nomd.py \
+    --traj <gen_N.extxyz> --max-frames 100 --name genN_nomd --output-dir lemat_data/temp
+```
+
+与主脚本的差异只有三处：没有 `--stride`（换成 `--max-frames`）、没有 `--cifs`、
+`meta.json` 多一个 `sanitize` 块记录剔了多少帧和为什么。
+CSV 列结构、输出文件名、`step` 编号全都一样，两轮结果可以直接对照。
+
 ## 已知限制
 
 - 含 Md（及 Po/At/Fr/Fm/No/Lr）的帧，`charge_deviation` 恒为 NaN——上游 bug，见 notes；
+  用 `run_traj_benchmark_nomd.py` 可以绕开（这些帧根本不参与计算）；
 - 同样这些帧的 MLIP 列也是 NaN——MACE-MP / orb-omat / UMA-omat 只覆盖到 Z≈89，Md 是 Z=101；
 - 当前只处理单条轨迹；跨轨迹聚合见 `notes/20260829-Plan-mybench.md` 的下一步计划。
